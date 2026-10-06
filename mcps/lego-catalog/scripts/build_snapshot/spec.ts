@@ -123,7 +123,8 @@ export const SCHEMA_VERSION = 1;
 export const SOURCE_URL = "https://rebrickable.com/downloads/";
 /**
  * CDN location of the gzipped CSVs. Download from GitHub Actions worked on 2026-10-05; the Rebrickable
- * downloads page itself returned 403 to a generic fetch tool. Rebrickable allows one automated download per day.
+ * downloads page itself returned 403 to a generic fetch tool. Rebrickable allows one automated download per day
+ * [source: Rebrickable Downloads page, text read 2026-10-06].
  */
 export const DOWNLOAD_BASE_URL = "https://cdn.rebrickable.com/media/downloads";
 

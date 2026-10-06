@@ -6,7 +6,10 @@ import { SnapshotError } from "./csv.ts";
 import { DOWNLOAD_BASE_URL, FILE_SPECS } from "./spec.ts";
 
 export const DOWNLOADED_AT_FILE = "DOWNLOADED_AT.txt";
-/** Rebrickable allows automated downloads at most once per day; we refuse inside that window. */
+/**
+ * Rebrickable allows automated downloads at most once per day; we refuse inside that window.
+ * [source: Rebrickable Downloads page, text read 2026-10-06]
+ */
 export const MIN_DOWNLOAD_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export class DownloadRefusedError extends SnapshotError {
