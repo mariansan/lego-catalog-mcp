@@ -1,0 +1,19 @@
+{
+  "name": "@mcps/lego-catalog",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Read-only MCP server over a slim SQLite snapshot of the Rebrickable LEGO catalog. Served at /lego-catalog/mcp.",
+  "scripts": {
+    "build:snapshot": "tsx scripts/build_snapshot/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "tsx src/dev-server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "csv-parse": "^7.0.3",
+    "zod": "^4"
+  }
+}

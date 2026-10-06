@@ -1,0 +1,19 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": false
+  },
+  "rewrites": [
+    {
+      "source": "/lego-catalog/mcp",
+      "destination": "/api/lego-catalog/mcp"
+    }
+  ],
+  "functions": {
+    "api/lego-catalog/mcp.ts": {
+      "includeFiles": "mcps/lego-catalog/data/rebrickable.sqlite",
+      "maxDuration": 30
+    }
+  },
+  "outputDirectory": "public"
+}

@@ -1,0 +1,15 @@
+# Rebrickable raw CSV cache and generated snapshot (never committed)
+.cache/
+*.sqlite
+*.sqlite-journal
+data/
+
+# Node / Vercel
+node_modules/
+.vercel/
+dist/
+
+# Secrets (project uses none; belt and braces)
+.env
+.env.*
+!.env.example
