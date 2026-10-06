@@ -9,9 +9,84 @@
 > envelope) is an accepted, documented limitation. L4 (no Origin/Host check) is deferred. The server has since been deployed to Vercel; a WAF rate-limit
 > rule was created by the repository owner in the Vercel dashboard and cannot be verified from this repository. The platform items below remain
 > UNVERIFIED unless noted in `docs/SELF_HOSTING.md`.
+> **Re-review 2026-10-06 (private endpoint):** the deployed function now requires a bearer token. See
+> "Re-review 2026-10-06: bearer gate" below. It supersedes the "authless" threat model for the maintainer's deployment,
+> closes SEC-L4 for production and adds SEC-L5 and SEC-L6.
+
 **Snapshot used for probes:** a local build of the 2026-10-05 Rebrickable snapshot (57.7 MB), passed via `LEGO_CATALOG_DB`.
 **Runtime used for probes:** Node v22.22.2 on Windows, running locally. Nothing ran on Vercel, so no statement below about deploy behaviour is verified.
 **Scanners run:** `pnpm audit` (all deps and `--prod`), a git grep for secrets across the working tree and all history, and direct probes of `handleMcpRequest` and SQLite.
+
+## Re-review 2026-10-06: bearer gate
+
+**Design source:** the maintainer's architecture review, addendum 2026-10-06 "private endpoint" (private).
+**Scope:** the change that adds the gate: `mcps/lego-catalog/src/auth.ts`, `tests/auth.test.ts`, `api/lego-catalog/mcp.ts`,
+`src/http.ts` (`rpcError` export), `scripts/smoke-mcp.mjs`, `scripts/public-export-files.txt`, `README.md`,
+`docs/SELF_HOSTING.md`. The maintainer's private deploy pipeline was reviewed separately; its findings are tracked privately.
+**Evidence:** code read; `pnpm lint`, `pnpm typecheck`, `pnpm -r test` (6 files, 138 tests) green after the patches below;
+smoke-script argument guards run locally; a local 308-redirect probe. No deployed endpoint was probed and no secret was
+read. The implementer reports a local end-to-end run (401 without header / wrong token / Basic, 503 unset, smoke passed on
+two URLs, no token in server logs); I did not observe that run.
+
+**Threat model change.** Asset: the function (cost) and the owner's exclusive use of it. Actors: anyone who finds the
+hostname; a compromised build dependency. The catalog data is public, so the token protects cost and exclusivity, not
+confidentiality. A leaked token is equivalent to the old authless state, not worse.
+
+### Gate verdict (`auth.ts`, `api/lego-catalog/mcp.ts`)
+
+| Check | Result |
+|---|---|
+| Runs first, every method | Yes. The adapter calls `gate()` before `handleMcpRequest`, so GET/OPTIONS/HEAD/oversized/invalid bodies all get 401 before the 405/413/400 guards. The body is never read on a reject. |
+| Fail closed | Unset, empty, < 32 chars, or (after patch P1) containing whitespace -> 503 `-32603`, `console.error` without the value. There is no code path that serves when the env var is bad. |
+| Constant time | `timingSafeEqual(sha256(presented), sha256(expected))`: always 32-byte buffers, no throw on length mismatch, length not leaked. The only early exits (missing header, wrong scheme) depend on attacker input, not on the secret. |
+| Header parsing | `Headers.get` trims and joins duplicates with `", "`; a duplicated header then fails the anchored regex -> 401. Scheme is case-insensitive (RFC 6750). `\S+` plus `[ \t]*$` are disjoint, so the regex is linear (no ReDoS). |
+| Logs | Only `{ reason: missing|scheme|mismatch }`. Test asserts neither the token nor "Bearer" reaches `console.*`. |
+| Both URL paths | One function serves `/lego-catalog/mcp` (rewrite) and `/api/lego-catalog/mcp`; both gated by construction and both probed by the smoke test. |
+| Brute force | 256-bit token (architect's generator, 32 random bytes base64url); online guessing is infeasible, so no lockout is needed. Cost of 401 floods is SEC-L6. |
+
+### Findings from this re-review
+
+| ID | Severity | Location | Title | Confidence | Status |
+|----|----------|----------|-------|------------|--------|
+| SEC-L5 | Low | `scripts/smoke-mcp.mjs` | The token could be sent over plain `http://` or follow a redirect | Confirmed | Fixed (P2) |
+| SEC-L6 | Low | platform | Every unauthenticated request is still a billed function invocation | Confirmed (design) | Accepted: spend amount + optional WAF presence pre-filter (architect Decision 2) |
+| SEC-A5 | Advisory | `auth.ts` | A whitespace-containing `MCP_AUTH_TOKEN` gave a silent 401-for-everyone instead of a misconfiguration signal | Confirmed | Fixed (P1) |
+| SEC-A6 | Advisory | docs | Token-generation and local-shell hygiene not spelled out in the public docs | Confirmed | Open: doc suggestion |
+
+**Advice for self-hosters running CI:** release deploy credentials only to your default branch
+(e.g. a protected deployment environment), and expose the hosting token only to the steps that call the hosting CLI.
+
+**SEC-L5 (Low, fixed): token transport in the smoke test.** It accepted any `http(s)://` URL with a token, so a mistyped
+`http://` sent the token in cleartext, and `fetch` followed redirects. Patch P2 below.
+
+**SEC-L6 (Low, accepted): 401s cost an invocation.** Rejection happens in the function, before the body is read
+(microseconds), but each one is billed, unlike a WAF deny. Accepted per architect Decision 2: spend amount with
+notifications now; a WAF rule that denies a *missing* `authorization` header (holds no secret) only if logs show volume.
+
+**SEC-A6 (Advisory): doc suggestions.** `SELF_HOSTING.md` step 0 says "at least 32 random characters"
+without a generator; point to a CSPRNG (`node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('base64url'))"`) or the
+password manager's generator, never a hand-typed value. After a manual smoke run, `Remove-Item Env:MCP_AUTH_TOKEN` and
+clear the clipboard. No doc advice was found that is wrong: tokens only from env, never argv/URL/`.env*`, Sensitive
+Production variable, rotation via redeploy + connector re-add are all sound.
+
+### Patches applied in this re-review
+
+- **P1** `mcps/lego-catalog/src/auth.ts`: `expected` containing whitespace -> 503 + `console.error` (it could never match
+  the `\S+` capture, so it was a silent lockout). Test cases `${TOKEN}\n` and ` ${TOKEN}` added to `tests/auth.test.ts`.
+- **P2** `scripts/smoke-mcp.mjs`: refuse to send the token to a non-local `http://` URL (exit 1); `redirect: "error"` on
+  every request so the token is never re-sent to a redirect target. Verified locally: an `http://example.invalid` URL with a
+  token exits 1 before any request; a local 308 makes the attempt fail with `fetch failed` and prints no token.
+
+### Confirmed correct (no change)
+
+- `smoke-mcp.mjs`: token only from `MCP_AUTH_TOKEN`; never printed (errors carry method, status, 200 chars of response
+  body; GitHub also masks secrets in logs); missing/empty token -> exit 1; `--no-auth` refused unless every URL's hostname
+  is `127.0.0.1`, `localhost` or `[::1]` (exact match, so `127.0.0.1.nip.io` and `localhost.` are refused); negative
+  probes run inside the retry loop.
+- CI: the token is passed only to the two steps that need it (secret check, smoke test).
+- `public-export-files.txt` lists `auth.ts` and its test, so the public adapter's import resolves.
+
+**Verdict:** ship. The gate itself has no open finding.
 
 ## Threat model
 
@@ -34,7 +109,8 @@
 | SEC-L1 | Low | `mcps/lego-catalog/src/tools.ts:103-110` | Duplicate FTS tokens are not deduplicated, so the worst-case query costs twice as much | Confirmed (measured) |
 | SEC-L2 | Low | SDK `CallToolRequestSchema` validation (before our handler) | Non-object `arguments` gives JSON-RPC `-32603` with a raw Zod issue dump and no `source`/`snapshot_date` envelope | Confirmed (measured) |
 | SEC-L3 | Low | `mcps/lego-catalog/src/http.ts:27`, `db.ts:41` | `getCatalog()` runs outside any try. A missing snapshot throws a message with absolute filesystem paths into the platform handler | Probable. The client-visible effect on Vercel is unverified |
-| SEC-L4 | Low | `mcps/lego-catalog/src/http.ts:11-14` | No Origin/Host validation (DNS rebinding) | Confirmed (by design) |
+| SEC-L4 | Low | `mcps/lego-catalog/src/http.ts:11-14` | No Origin/Host validation (DNS rebinding). **Production: closed 2026-10-06**, superseded by the bearer gate (a rebinding page cannot supply the token) | Confirmed (by design) |
+| SEC-L4-dev | Low | `mcps/lego-catalog/src/dev-server.ts` | The authless local dev server (127.0.0.1) still has no Host check; a rebinding page could reach it. Public data + CPU only. **Open** | Confirmed (by design) |
 | SEC-A1 | Advisory | `pnpm-lock.yaml` | 5 dev-only advisories (brace-expansion 5.0.8 via minimatch, nanoid 3.3.16 via postcss). `--prod` is clean | Confirmed (pnpm audit). Not NVD-cross-checked |
 | SEC-A2 | Advisory | `mcps/lego-catalog/package.json:15` | `csv-parse` is in `dependencies` but only the build script uses it | Confirmed |
 | SEC-A3 | Advisory | SDK `webStandardStreamableHttp.js:710` | SDK catch-all returns `String(error)` in `error.data` | Confirmed (SDK source). Not reached in any probe |
@@ -114,12 +190,14 @@ This is a deliberate choice (`http.ts:11-14`). The data is public and read-only 
 
 ## Needs platform configuration (UNVERIFIED until checked on a real deployment)
 
-1. **Rate limiting:** add a Vercel WAF rate-limit rule (per IP) on `/lego-catalog/mcp`. This cannot be done meaningfully in code on stateless serverless (no shared store, and the project has no Redis). It only works well once H1 is fixed, because otherwise one request is 100 calls.
+1. **Superseded 2026-10-06** for the maintainer's deployment by the bearer gate (architect addendum Decision 2: delete
+   the rule only after the first authenticated deploy passes its smoke test). Still applies to anyone who removes the gate,
+   on **both** paths. Original text: **Rate limiting:** add a Vercel WAF rate-limit rule (per IP) on `/lego-catalog/mcp`. This cannot be done meaningfully in code on stateless serverless (no shared store, and the project has no Redis). It only works well once H1 is fixed, because otherwise one request is 100 calls.
 2. **Spend protection:** turn on Vercel Spend Management or usage alerts. An authless endpoint can always be flooded with valid single calls, and only the platform can cap the bill.
 3. **Platform request/response limits:** I believe the Vercel function body limit is about 4.5 MB, but I have not checked it. If so, the 4.2 MB batch response above is just under it. Confirm after the fixes.
 4. **Event-loop blocking under Fluid concurrency:** measure p95 latency under parallel load once deployed. If co-located requests stall, consider capping per-instance concurrency or moving to an async SQLite driver.
 5. **What a thrown error looks like on Vercel (L3):** confirm that an uncaught throw shows no message text.
-6. **Origin header from Claude's connector (L4):** confirm before adding any Origin check.
+6. *(Dropped 2026-10-06: SEC-L4 production is closed by the bearer gate, so Claude's `Origin` header no longer matters.)*
 7. **Response headers:** consider `X-Content-Type-Options: nosniff` and `Cache-Control: no-store` via `vercel.json` `headers`. HTTPS is enforced by Vercel (platform default, not verified here). Browser-page headers (CSP, frame-ancestors) do not apply to a JSON-only API.
 
 ## Suggested regression tests

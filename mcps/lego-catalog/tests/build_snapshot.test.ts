@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -118,6 +119,35 @@ function writeFixtureCache(dir: string, overrides: Record<string, string> = {}):
   }
   writeFileSync(join(dir, "DOWNLOADED_AT.txt"), "downloaded_utc=2026-10-05T15:40:52Z\n");
 }
+
+describe("--download-only (never touches the network in tests)", () => {
+  let root: string;
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), "snap-do-"));
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it("with a complete cache makes no network call and builds no sqlite", () => {
+    const cache = join(root, "cache");
+    const out = join(root, "out.sqlite");
+    writeFixtureCache(cache);
+    const stampBefore = readFileSync(join(cache, "DOWNLOADED_AT.txt"), "utf8");
+    const pkg = join(import.meta.dirname, "..");
+    // The preload poisons fetch: any network attempt makes ensureCache throw, which fails the run (exit 1).
+    const poison = "data:text/javascript,globalThis.fetch=()=>{throw new Error('NETWORK CALL ATTEMPTED')}";
+    const res = spawnSync(
+      process.execPath,
+      ["--import", poison, "--import", "tsx", "scripts/build_snapshot/main.ts", "--download-only", "--cache-dir", cache, "--out", out],
+      { cwd: pkg, encoding: "utf8", timeout: 60_000 },
+    );
+    expect(res.stderr).not.toMatch(/NETWORK CALL ATTEMPTED/);
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain("csv cache ready:");
+    expect(existsSync(out)).toBe(false);
+    expect(existsSync(`${out}.tmp`)).toBe(false);
+    expect(readFileSync(join(cache, "DOWNLOADED_AT.txt"), "utf8")).toBe(stampBefore); // no download => stamp untouched
+  });
+});
 
 describe("build pipeline on a fixture", () => {
   let root: string;

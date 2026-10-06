@@ -28,7 +28,7 @@ import { createLegoServer } from "./server.js";
 /** A legitimate MCP request here is well under 1 KiB; 64 KiB leaves ample room. */
 export const MAX_REQUEST_BODY_BYTES = 64 * 1024;
 
-function rpcError(status: number, code: number, message: string): Response {
+export function rpcError(status: number, code: number, message: string): Response {
   return Response.json({ jsonrpc: "2.0", error: { code, message }, id: null }, { status });
 }
 

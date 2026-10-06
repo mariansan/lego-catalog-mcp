@@ -5,9 +5,11 @@ Vercel domain under `/<server>/mcp`. The first (and currently only) server is **
 
 ## 1. What it is
 
-`lego-catalog` is a **public, read-only, authless remote MCP server** (Streamable HTTP, stateless) that exposes the
+`lego-catalog` is a **read-only remote MCP server** (Streamable HTTP, stateless) that exposes the
 [Rebrickable](https://rebrickable.com/downloads/) LEGO catalog (parts, colors, set inventories) from a SQLite snapshot.
 The goal: an agent can **verify part IDs and colors** instead of inventing them.
+
+Deployments require a **bearer token** (`MCP_AUTH_TOKEN`): the data is public, the endpoint is not.
 
 > Development happens in a private source repository; the public copy at https://github.com/mariansan/lego-catalog-mcp is a reference copy updated from it periodically and runs no CI or deploy automation.
 
@@ -30,11 +32,13 @@ This repository does not publish a hosted endpoint. Run the server locally or ho
 https://<your-domain>/lego-catalog/mcp
 ```
 
-In Claude: Customize -> Connectors -> **Add custom connector** -> paste your URL -> Authentication: **No sign-in** (this
-server is authless).
+In Claude: Customize -> Connectors -> **Add custom connector** -> paste your URL -> Authentication: **No sign-in**, then
+under **Request headers** add `authorization` = `Bearer <your token>` and mark it Required. Request headers are in beta
+and available to a limited set of organizations; Claude does not show a header value again after you save it, so changing
+the token means removing and re-adding the connector [source: Claude's custom connector documentation, read 2026-10-06].
 
 > **Use the FULL path.** The origin alone (`https://<your-domain>`) is not an MCP endpoint: it answers 405 to MCP
-> requests, and Claude then shows a misleading sign-in warning.
+> requests, and Claude then shows a misleading sign-in warning. The full path answers 401 without the token.
 
 The [self-hosting guide](docs/SELF_HOSTING.md#add-the-connector-in-claude) covers adding the connector (including Team/Enterprise steps and per-chat enabling), running locally and hosting your own copy.
 
@@ -227,7 +231,7 @@ pnpm --filter @mcps/lego-catalog build:snapshot
 pnpm --filter @mcps/lego-catalog dev
 
 # Smoke test any endpoint
-node scripts/smoke-mcp.mjs http://127.0.0.1:3000/lego-catalog/mcp
+node scripts/smoke-mcp.mjs --no-auth http://127.0.0.1:3000/lego-catalog/mcp   # the dev server has no token check
 ```
 
 Tests that need the real snapshot **skip** when `LEGO_CATALOG_DB` is unset. To run everything, point it at a built
@@ -239,18 +243,25 @@ $env:LEGO_CATALOG_DB = "C:\path\to\rebrickable.sqlite"; pnpm test
 
 The server looks for the snapshot in `LEGO_CATALOG_DB`, then `mcps/lego-catalog/data/rebrickable.sqlite`.
 
+`MCP_AUTH_TOKEN` is required by the deployed function: set it as a **Sensitive** environment variable for Production in
+Vercel (at least 32 random characters). If it is unset the function answers **503** to every request (it fails closed).
+The smoke test reads the same variable from the environment, never from the command line. The local dev server does not
+check it.
+
 ## 7. Security and status
 
 See [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md) for the review and its findings. Honest status:
 
-- There is **no authentication, by design**: the data is public and the server is read-only.
-- The maintainer's deployment has a Vercel WAF rate-limit rule configured in the Vercel dashboard (not by code); this
-  repository cannot prove it is active.
-- No CORS headers are sent. An `Origin`/`Host` allowlist is deferred until it is known what Claude's connector sends.
+- The deployed function requires `Authorization: Bearer <token>`. The token is compared in constant time against
+  `MCP_AUTH_TOKEN`; a missing or wrong token gets 401 before the request body is read, and an unset variable gets 503.
+- The local dev server has no token check and listens on 127.0.0.1 only.
+- The maintainer's deployment is private.
+- No CORS headers are sent.
 
 ## 8. Attribution and legal
 
-- Data: Rebrickable (https://rebrickable.com/downloads/).
+- Data: Rebrickable (https://rebrickable.com/downloads/). Rebrickable asks to be acknowledged as the source of the data
+  [source: Rebrickable Downloads page, text read 2026-10-06].
 - LEGO is a trademark of the LEGO Group; this project is not affiliated with or endorsed by it.
 - Rebrickable's Terms of Service (section 5.3) forbid training AI models on their content. This server serves data **at
   inference time only**. [source: Rebrickable Terms of Service, text read 2026-10-06]

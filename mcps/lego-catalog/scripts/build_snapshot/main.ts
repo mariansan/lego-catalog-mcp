@@ -1,11 +1,14 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { buildSnapshot } from "./build.ts";
+import { ensureCache } from "./download.ts";
 
 const { values } = parseArgs({
   options: {
     "cache-dir": { type: "string" },
     out: { type: "string" },
+    // Only make sure the CSV cache exists (downloading if missing, subject to the once-a-day guard); no sqlite build.
+    "download-only": { type: "boolean", default: false },
   },
 });
 
@@ -14,6 +17,18 @@ const cacheDir = resolve(values["cache-dir"] ?? process.env.REBRICKABLE_CACHE_DI
 const outPath = resolve(values.out ?? resolve(PKG, "data/rebrickable.sqlite"));
 
 console.log(`cache dir: ${cacheDir}`);
+
+if (values["download-only"]) {
+  try {
+    await ensureCache(cacheDir);
+    console.log(`csv cache ready: ${cacheDir}`);
+  } catch (err) {
+    console.error(`DOWNLOAD FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  }
+  process.exit();
+}
+
 console.log(`output:    ${outPath}`);
 
 try {
