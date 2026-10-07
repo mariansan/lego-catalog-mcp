@@ -1,19 +1,17 @@
-import { existsSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { candidateDbPaths, openCatalog } from "../src/db.ts";
+import { openCatalog } from "../src/db.ts";
 import { startDevServer } from "../src/dev-server.ts";
+import { dbPath } from "./helpers/snapshot.ts";
 
-const dbPath = candidateDbPaths().find((p) => existsSync(p));
-
-describe.skipIf(!dbPath)("dev runner over real HTTP (Streamable HTTP, stateless)", () => {
+describe("dev runner over real HTTP (Streamable HTTP, stateless)", () => {
   let url: string;
   let close: () => Promise<void>;
   let client: Client;
 
   beforeAll(async () => {
-    ({ url, close } = await startDevServer({ catalog: openCatalog(dbPath as string) }));
+    ({ url, close } = await startDevServer({ catalog: openCatalog(dbPath) }));
     client = new Client({ name: "http-test", version: "0.0.0" });
     await client.connect(new StreamableHTTPClientTransport(new URL(url)));
   });
