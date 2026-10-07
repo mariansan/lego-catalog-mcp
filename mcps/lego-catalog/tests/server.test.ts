@@ -1,19 +1,20 @@
-import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MIN_ROWS } from "../scripts/build_snapshot/spec.ts";
 import { LIMITS } from "../src/config.ts";
-import { candidateDbPaths, openCatalog } from "../src/db.ts";
+import { openCatalog } from "../src/db.ts";
 import { createLegoServer } from "../src/server.ts";
 import { extractSearchTokens, normalizeSetNum } from "../src/tools.ts";
-
-const dbPath = candidateDbPaths().find((p) => existsSync(p));
+import { dbPath, isReal } from "./helpers/snapshot.ts";
 
 type Body = Record<string, unknown> & { source?: string; snapshot_date?: string };
 
-describe.skipIf(!dbPath)("MCP server over the real snapshot (in-memory transport)", () => {
+// Runs on the real snapshot when one is configured, otherwise on the fixture snapshot built by the real builder
+// (tests/helpers/global-setup.ts). Counts are compared with the oracle's own COUNT(*); only the completeness floors
+// (MIN_ROWS) are real-data-only and are gated on `isReal`.
+describe("MCP server over the snapshot under test (in-memory transport)", () => {
   let client: Client;
   let snapshotDate: string;
   // Independent oracle: its own read-only handle and its own plain SQL, so the expected values come from whatever
@@ -22,7 +23,7 @@ describe.skipIf(!dbPath)("MCP server over the real snapshot (in-memory transport
   let set75192: { versions: number[]; latestVersion: number; latestRows: number };
 
   beforeAll(async () => {
-    oracleDb = new DatabaseSync(dbPath as string, { readOnly: true });
+    oracleDb = new DatabaseSync(dbPath, { readOnly: true });
     const versions = (
       oracleDb.prepare("SELECT version FROM inventories WHERE set_num = '75192-1' ORDER BY version").all() as { version: number }[]
     ).map((r) => r.version);
@@ -35,7 +36,7 @@ describe.skipIf(!dbPath)("MCP server over the real snapshot (in-memory transport
         .get(latestVersion) as { n: number }
     ).n;
     set75192 = { versions, latestVersion, latestRows };
-    const catalog = openCatalog(dbPath as string);
+    const catalog = openCatalog(dbPath);
     snapshotDate = catalog.snapshotDate;
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
     await createLegoServer(catalog).connect(serverSide);
@@ -46,6 +47,10 @@ describe.skipIf(!dbPath)("MCP server over the real snapshot (in-memory transport
     await client.close();
     oracleDb.close();
   });
+
+  // Table names are literals from this file only; never user input.
+  const count = (table: "colors" | "parts"): number =>
+    (oracleDb.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
 
   async function call(name: string, args: Record<string, unknown> = {}) {
     const result = await client.callTool({ name, arguments: args });
@@ -147,7 +152,8 @@ describe.skipIf(!dbPath)("MCP server over the real snapshot (in-memory transport
 
   it("list_colors filters and paginates", async () => {
     const all = await call("list_colors", {});
-    expect(all.body.total).toBeGreaterThanOrEqual(MIN_ROWS.colors as number);
+    expect(all.body.total).toBe(count("colors"));
+    if (isReal) expect(all.body.total).toBeGreaterThanOrEqual(MIN_ROWS.colors as number); // real-data completeness floor
     const black = await call("list_colors", { name: "black" });
     expect((black.body.colors as { name: string }[]).some((c) => c.name === "Black")).toBe(true);
     const trans = await call("list_colors", { is_trans: true, limit: 5 });
@@ -165,7 +171,8 @@ describe.skipIf(!dbPath)("MCP server over the real snapshot (in-memory transport
   it("snapshot_info reports the snapshot date and limits", async () => {
     const { body } = await call("snapshot_info");
     expect(body.snapshot_date).toBe(snapshotDate);
-    expect((body.row_counts as Record<string, number>).parts).toBeGreaterThanOrEqual(MIN_ROWS.parts as number);
+    expect((body.row_counts as Record<string, number>).parts).toBe(count("parts"));
+    if (isReal) expect((body.row_counts as Record<string, number>).parts).toBeGreaterThanOrEqual(MIN_ROWS.parts as number); // real-data floor
     expect(body.limits).toMatchObject({ max_limit: 100, max_inventory_limit: 200 });
   });
 

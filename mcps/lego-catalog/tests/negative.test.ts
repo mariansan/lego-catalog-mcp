@@ -1,19 +1,19 @@
 /**
  * Negative suite: hostile and malformed input against every tool and the HTTP entry point.
- * Runs against the real snapshot (LEGO_CATALOG_DB); skips when it is absent, like the other suites.
+ * Runs against the real snapshot when LEGO_CATALOG_DB points at one, otherwise against the fixture snapshot built by
+ * the real builder in tests/helpers/global-setup.ts (so it never skips).
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LIMITS } from "../src/config.ts";
-import { all, candidateDbPaths, first, openCatalog, type Catalog } from "../src/db.ts";
+import { all, first, openCatalog, type Catalog } from "../src/db.ts";
 import { handleMcpRequest, MAX_REQUEST_BODY_BYTES } from "../src/http.ts";
 import { createLegoServer } from "../src/server.ts";
 import { extractSearchTokens } from "../src/tools.ts";
-
-const dbPath = candidateDbPaths().find((p) => existsSync(p));
+import { dbPath } from "./helpers/snapshot.ts";
 
 type Body = Record<string, unknown> & { source?: string; snapshot_date?: string; error?: { code: string; message: string } };
 
@@ -44,20 +44,20 @@ const INJECTIONS = [
   "{{7*7}}",
 ];
 
-describe.skipIf(!dbPath)("negative suite over the real snapshot", () => {
+describe("negative suite over the snapshot under test", () => {
   let catalog: Catalog;
   let client: Client;
   let fingerprint: () => Record<string, number>;
 
   beforeAll(async () => {
-    catalog = openCatalog(dbPath as string);
+    catalog = openCatalog(dbPath);
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
     await createLegoServer(catalog).connect(serverSide);
     client = new Client({ name: "negative", version: "0.0.0" });
     await client.connect(clientSide);
     // Row counts of every table, taken through a second read-only handle, to prove nothing changed.
     fingerprint = () => {
-      const db = new DatabaseSync(dbPath as string, { readOnly: true });
+      const db = new DatabaseSync(dbPath, { readOnly: true });
       try {
         const names = all<{ name: string }>(db, "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '%\\_%' ESCAPE '\\' ORDER BY name");
         return Object.fromEntries(names.map(({ name }) => [name, first<{ n: number }>(db, `SELECT count(*) AS n FROM "${name}"`)?.n ?? -1]));
@@ -227,8 +227,8 @@ describe.skipIf(!dbPath)("negative suite over the real snapshot", () => {
     });
 
     it("the snapshot file is byte-for-byte untouched by the suite (size check)", () => {
-      expect(statSync(dbPath as string).size).toBeGreaterThan(0);
-      expect(readFileSync(dbPath as string).subarray(0, 15).toString()).toBe("SQLite format 3");
+      expect(statSync(dbPath).size).toBeGreaterThan(0);
+      expect(readFileSync(dbPath).subarray(0, 15).toString()).toBe("SQLite format 3");
     });
   });
 
@@ -366,10 +366,10 @@ describe.skipIf(!dbPath)("negative suite over the real snapshot", () => {
 // ---------------------------------------------------------------------------------------------
 // HTTP layer: handleMcpRequest is the single entry point for Vercel and the dev runner.
 // ---------------------------------------------------------------------------------------------
-describe.skipIf(!dbPath)("HTTP layer: malformed and hostile requests", () => {
+describe("HTTP layer: malformed and hostile requests", () => {
   let catalog: Catalog;
   beforeAll(() => {
-    catalog = openCatalog(dbPath as string);
+    catalog = openCatalog(dbPath);
   });
 
   const URL_ = "http://localhost/lego-catalog/mcp";

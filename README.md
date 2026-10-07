@@ -195,6 +195,7 @@ Errors are tool results with `isError: true` and the shape
 | Request body | 64 KiB (larger gets HTTP 413) |
 | JSON-RPC batches | Rejected (HTTP 400) |
 | `GET` / `DELETE` | HTTP 405 (stateless: no stream or session to manage) |
+| Snapshot missing or unreadable | HTTP 503 `Service unavailable: catalog not loaded.` (JSON-RPC error, no `source`/`snapshot_date`) |
 
 Because of the payload budget, `get_set_inventory` with `limit=200` may return fewer rows than requested; follow
 `next_offset`.

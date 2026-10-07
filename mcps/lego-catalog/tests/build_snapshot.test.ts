@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { candidateDbPaths } from "../src/db.ts";
+import { dbPath, isReal } from "./helpers/snapshot.ts";
+import { writeFixtureCache } from "./helpers/fixture-cache.ts";
 import { assertFts5Available, buildSnapshot } from "../scripts/build_snapshot/build.ts";
 import {
   assertNoUnknownFiles,
@@ -99,27 +100,6 @@ describe("download guard (never executed in tests)", () => {
   });
 });
 
-/** Writes a tiny but complete 12-file cache. */
-function writeFixtureCache(dir: string, overrides: Record<string, string> = {}): void {
-  mkdirSync(dir, { recursive: true });
-  const rows: Record<string, string[]> = {
-    colors: ["0,Black,05131D,False,100,200,1957,2025", "-1,[Unknown],0033B2,False,0,0,,"],
-    part_categories: ["11,Bricks"],
-    parts: ["3001,Brick 2 x 4,11,Plastic", '3002,"Brick 2 x 3, special",11,Plastic'],
-    elements: ["300126,3001,5,3001", "9999999,3002,5,"],
-    sets: ["75192-1,Millennium Falcon,2017,171,7541,https://img/1.jpg"],
-    themes: ["171,Star Wars,"],
-    inventories: ["1,1,75192-1", "2,2,75192-1", "3,1,fig-000001"],
-    inventory_parts: ["1,3001,5,2,False,https://img/a.jpg", "2,3001,5,3,False,https://img/a.jpg", "2,3002,5,1,True,"],
-  };
-  for (const s of FILE_SPECS) {
-    const header = s.columns.map((c) => c.name).join(",");
-    const body = rows[s.file] ?? [];
-    writeFileSync(join(dir, `${s.file}.csv`), overrides[s.file] ?? [header, ...body].join("\n") + "\n");
-  }
-  writeFileSync(join(dir, "DOWNLOADED_AT.txt"), "downloaded_utc=2026-10-05T15:40:52Z\n");
-}
-
 describe("--download-only (never touches the network in tests)", () => {
   let root: string;
   beforeAll(() => {
@@ -213,21 +193,28 @@ describe("build pipeline on a fixture", () => {
   });
 });
 
-/** Acceptance probes against the real snapshot. Skipped when data/rebrickable.sqlite has not been built. */
-const REAL = candidateDbPaths().find((p) => existsSync(p));
-describe.skipIf(!REAL)("acceptance probes (real snapshot)", () => {
-  // Opened in beforeAll: vitest still runs a skipped describe's body, so opening here would throw when the file is absent.
+/**
+ * Acceptance probes against the snapshot under test: the real one when configured, otherwise the fixture snapshot built
+ * by the real builder (tests/helpers/global-setup.ts). Only the completeness floors are real-data-only (`isReal`).
+ */
+describe("acceptance probes (snapshot under test)", () => {
   let db: DatabaseSync;
   beforeAll(() => {
-    db = new DatabaseSync(REAL as string, { readOnly: true });
+    db = new DatabaseSync(dbPath, { readOnly: true });
   });
   afterAll(() => db.close());
 
   // Invariants, not history: a fresh Rebrickable download changes every count, so no test may pin one.
-  it("every table meets its completeness floor and meta agrees with the real row count", () => {
+  it.runIf(isReal)("every table meets its completeness floor (real snapshot only: the fixture is tiny by design)", () => {
     for (const [table, floor] of Object.entries(MIN_ROWS)) {
       const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
       expect(row.n, `${table} row count`).toBeGreaterThanOrEqual(floor);
+    }
+  });
+
+  it("meta agrees with the real row count of every table", () => {
+    for (const table of Object.keys(MIN_ROWS)) {
+      const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
       const meta = db.prepare("SELECT value FROM meta WHERE key = ?").get(`rows.${table}`) as { value: string };
       expect(Number(meta.value), `meta rows.${table}`).toBe(row.n);
     }

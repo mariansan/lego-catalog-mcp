@@ -12,6 +12,19 @@ import { handleMcpRequest } from "./http.js";
 export const MCP_PATH = "/lego-catalog/mcp";
 const MAX_BODY_BYTES = 1_048_576;
 
+/**
+ * SEC-L4-dev: DNS-rebinding guard. This server is authless and binds 127.0.0.1, so a page on an attacker's domain that
+ * rebinds its name to 127.0.0.1 could otherwise reach it; the browser would still send the attacker's name in `Host`.
+ * Only loopback authorities on the bound port are accepted (case-insensitive). Missing Host is rejected too.
+ */
+export function loopbackHosts(port: number): ReadonlySet<string> {
+  return new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
+}
+
+export function isAllowedHost(host: string | undefined, allowed: ReadonlySet<string>): host is string {
+  return host !== undefined && allowed.has(host.toLowerCase());
+}
+
 async function readBody(req: IncomingMessage): Promise<Buffer | null> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -28,9 +41,18 @@ export async function startDevServer(
   options: { port?: number; catalog?: Catalog } = {},
 ): Promise<{ url: string; close: () => Promise<void> }> {
   const catalog = options.catalog ?? getCatalog();
+  // Filled in once the port is bound; until then every request is rejected.
+  let allowedHosts: ReadonlySet<string> = new Set();
   const server: Server = createServer((req, res) => {
+    // Before any routing or body read. 421 Misdirected Request: this server does not serve that authority.
+    // The received Host is not echoed back.
+    const host = req.headers.host;
+    if (!isAllowedHost(host, allowedHosts)) {
+      res.writeHead(421, { "content-type": "text/plain", connection: "close" }).end("Misdirected request");
+      return;
+    }
     void (async () => {
-      const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+      const url = new URL(req.url ?? "/", `http://${host}`);
       if (url.pathname !== MCP_PATH) {
         res.writeHead(404, { "content-type": "text/plain" }).end("Not found");
         return;
@@ -55,6 +77,7 @@ export async function startDevServer(
   });
   await new Promise<void>((resolve) => server.listen(options.port ?? 0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
+  allowedHosts = loopbackHosts(port);
   return {
     url: `http://127.0.0.1:${port}${MCP_PATH}`,
     close: () => new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))),

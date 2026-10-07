@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
  * Sanity gate for the Rebrickable SQLite snapshot. Run it between `build:snapshot` and the
- * deploy:   node scripts/check-snapshot.mjs [path-to-sqlite]
- * Path resolution: argv[2], then $LEGO_CATALOG_DB, then mcps/lego-catalog/data/rebrickable.sqlite.
+ * deploy:   node scripts/check-snapshot.mjs [path-to-sqlite] [--max-age-days N]
+ * Path resolution: first positional argument, then $LEGO_CATALOG_DB, then mcps/lego-catalog/data/rebrickable.sqlite.
+ * --max-age-days N: oldest snapshot_date accepted (default 2: right after a build). A deploy that
+ * reuses a stored snapshot passes a larger N, because it legitimately ships older data.
  * Exit 0 = snapshot looks sane; exit 1 = do not deploy it.
  *
  * The row floors live in mcps/lego-catalog/scripts/build_snapshot/floors.json, the single
@@ -17,9 +19,23 @@ import { DatabaseSync } from "node:sqlite";
 const MIN_ROWS = JSON.parse(
   readFileSync(resolve(import.meta.dirname, "../mcps/lego-catalog/scripts/build_snapshot/floors.json"), "utf8"),
 );
-const MAX_AGE_DAYS = 2;
 
-const path = resolve(process.argv[2] ?? process.env.LEGO_CATALOG_DB ?? "mcps/lego-catalog/data/rebrickable.sqlite");
+const args = process.argv.slice(2);
+let MAX_AGE_DAYS = 2;
+const positional = [];
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === "--max-age-days") {
+    MAX_AGE_DAYS = Number(args[++i]);
+    if (!Number.isFinite(MAX_AGE_DAYS) || MAX_AGE_DAYS < 0) {
+      console.error("FAIL: --max-age-days needs a non-negative number");
+      process.exit(1);
+    }
+  } else {
+    positional.push(args[i]);
+  }
+}
+
+const path = resolve(positional[0] ?? process.env.LEGO_CATALOG_DB ?? "mcps/lego-catalog/data/rebrickable.sqlite");
 const failures = [];
 const fail = (msg) => failures.push(msg);
 
